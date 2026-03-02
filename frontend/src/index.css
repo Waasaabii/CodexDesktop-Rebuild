@@ -49,17 +49,17 @@ body,
 .window-shell {
   width: 100%;
   height: 100%;
-  padding: 8px;
+  padding: 0;
   background: var(--app-window-bg);
 }
 
 .main-surface {
   width: 100%;
   height: 100%;
-  border: 1px solid var(--app-border-soft);
-  border-radius: 12px;
+  border: none;
+  border-radius: 0;
   overflow: hidden;
-  box-shadow: var(--app-shadow);
+  box-shadow: none;
   background: var(--app-main-surface);
   transition: background-color 180ms ease, border-radius 180ms ease, box-shadow 180ms ease;
 }

@@ -294,7 +294,8 @@ export default function App() {
   const threadVirtualizer = useVirtualizer({
     count: filteredThreads.length,
     getScrollElement: () => threadViewportRef.current,
-    estimateSize: () => 66,
+    estimateSize: () => 92,
+    measureElement: (element) => element?.getBoundingClientRect().height ?? 92,
     overscan: 16,
   });
 
@@ -302,6 +303,7 @@ export default function App() {
     count: selectedMessages.length,
     getScrollElement: () => messageViewportRef.current,
     estimateSize: () => 94,
+    measureElement: (element) => element?.getBoundingClientRect().height ?? 94,
     overscan: 20,
   });
 
@@ -531,6 +533,7 @@ export default function App() {
                     return (
                       <div
                         key={thread.id}
+                        ref={threadVirtualizer.measureElement}
                         className={`group absolute left-0 top-0 w-full rounded-lg border ${
                           active
                             ? "border-codex-accent/60 bg-[rgba(38,57,84,0.72)]"
@@ -660,6 +663,7 @@ export default function App() {
                           return (
                             <div
                               key={message.id}
+                              ref={messageVirtualizer.measureElement}
                               className="absolute left-0 top-0 w-full"
                               style={{ transform: `translateY(${item.start}px)` }}
                             >
