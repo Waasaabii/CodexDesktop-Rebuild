@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -109,6 +110,13 @@ struct CodexTurnOutput {
     stream_errors: Vec<String>,
     raw_events: Vec<Value>,
     stderr: String,
+}
+
+#[derive(Debug, Clone)]
+struct CodexCliCandidate {
+    program: PathBuf,
+    prefix_args: Vec<String>,
+    source: String,
 }
 
 #[derive(Debug)]
@@ -787,18 +795,197 @@ fn resolve_workspace_dir(workspace: &str) -> PathBuf {
     current_dir
 }
 
-fn run_codex_turn(
-    workspace: &str,
-    existing_codex_thread_id: Option<&str>,
-    prompt: &str,
-) -> Result<CodexTurnOutput, String> {
-    let trimmed_prompt = prompt.trim();
-    if trimmed_prompt.is_empty() {
-        return Err("message cannot be empty".to_string());
+fn is_script_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "js" | "mjs" | "cjs"))
+        .unwrap_or(false)
+}
+
+fn is_cmd_script_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "cmd" | "bat"))
+        .unwrap_or(false)
+}
+
+fn make_candidate_from_program_path(path: PathBuf, source: String) -> CodexCliCandidate {
+    #[cfg(target_os = "windows")]
+    if is_cmd_script_path(&path) {
+        return CodexCliCandidate {
+            program: PathBuf::from("cmd.exe"),
+            prefix_args: vec!["/C".to_string(), path.to_string_lossy().to_string()],
+            source,
+        };
     }
 
-    let workspace_dir = resolve_workspace_dir(workspace);
-    let mut command = Command::new("codex");
+    if is_script_path(&path) {
+        CodexCliCandidate {
+            program: PathBuf::from("node"),
+            prefix_args: vec![path.to_string_lossy().to_string()],
+            source,
+        }
+    } else {
+        CodexCliCandidate {
+            program: path,
+            prefix_args: Vec::new(),
+            source,
+        }
+    }
+}
+
+fn push_candidate_if_exists(
+    candidates: &mut Vec<CodexCliCandidate>,
+    path: PathBuf,
+    source: impl Into<String>,
+) {
+    if path.exists() {
+        candidates.push(make_candidate_from_program_path(path, source.into()));
+    }
+}
+
+fn codex_cli_candidates(workspace_dir: &Path) -> Vec<CodexCliCandidate> {
+    let mut candidates: Vec<CodexCliCandidate> = Vec::new();
+
+    if let Some(explicit_bin) = std::env::var_os("CODEX_BIN") {
+        let path = PathBuf::from(explicit_bin);
+        candidates.push(make_candidate_from_program_path(
+            path,
+            "CODEX_BIN".to_string(),
+        ));
+    }
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            #[cfg(target_os = "windows")]
+            {
+                push_candidate_if_exists(
+                    &mut candidates,
+                    dir.join("codex.exe"),
+                    "current executable directory".to_string(),
+                );
+                push_candidate_if_exists(
+                    &mut candidates,
+                    dir.join("codex.cmd"),
+                    "current executable directory".to_string(),
+                );
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                push_candidate_if_exists(
+                    &mut candidates,
+                    dir.join("codex"),
+                    "current executable directory".to_string(),
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(app_data) = std::env::var_os("APPDATA") {
+            let npm_dir = PathBuf::from(app_data).join("npm");
+            push_candidate_if_exists(
+                &mut candidates,
+                npm_dir.join("codex.cmd"),
+                "APPDATA npm global bin".to_string(),
+            );
+            push_candidate_if_exists(
+                &mut candidates,
+                npm_dir.join("codex"),
+                "APPDATA npm global bin".to_string(),
+            );
+        }
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        #[cfg(target_os = "windows")]
+        {
+            push_candidate_if_exists(
+                &mut candidates,
+                home.join(".npm-global").join("bin").join("codex.cmd"),
+                "home npm-global bin".to_string(),
+            );
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            push_candidate_if_exists(
+                &mut candidates,
+                home.join(".local").join("bin").join("codex"),
+                "home local bin".to_string(),
+            );
+            push_candidate_if_exists(
+                &mut candidates,
+                home.join(".npm-global").join("bin").join("codex"),
+                "home npm-global bin".to_string(),
+            );
+        }
+    }
+
+    push_candidate_if_exists(
+        &mut candidates,
+        workspace_dir
+            .join("tem")
+            .join("codex")
+            .join("codex-cli")
+            .join("bin")
+            .join("codex.js"),
+        "workspace tem/codex checkout".to_string(),
+    );
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        push_candidate_if_exists(
+            &mut candidates,
+            current_dir
+                .join("tem")
+                .join("codex")
+                .join("codex-cli")
+                .join("bin")
+                .join("codex.js"),
+            "current directory tem/codex checkout".to_string(),
+        );
+    }
+
+    candidates.push(CodexCliCandidate {
+        program: PathBuf::from("codex"),
+        prefix_args: Vec::new(),
+        source: "PATH lookup".to_string(),
+    });
+
+    #[cfg(target_os = "windows")]
+    candidates.push(CodexCliCandidate {
+        program: PathBuf::from("codex.cmd"),
+        prefix_args: Vec::new(),
+        source: "PATH lookup".to_string(),
+    });
+
+    let mut deduped: Vec<CodexCliCandidate> = Vec::new();
+    let mut seen_keys: HashMap<String, bool> = HashMap::new();
+    for candidate in candidates {
+        let key = format!(
+            "{}|{}",
+            candidate.program.to_string_lossy(),
+            candidate.prefix_args.join(" ")
+        );
+        if seen_keys.insert(key, true).is_none() {
+            deduped.push(candidate);
+        }
+    }
+    deduped
+}
+
+fn build_codex_turn_command(
+    candidate: &CodexCliCandidate,
+    workspace_dir: &Path,
+    existing_codex_thread_id: Option<&str>,
+    prompt: &str,
+) -> Command {
+    let mut command = Command::new(&candidate.program);
+    if !candidate.prefix_args.is_empty() {
+        command.args(&candidate.prefix_args);
+    }
 
     if let Some(thread_id) = existing_codex_thread_id
         .map(str::trim)
@@ -810,16 +997,92 @@ fn run_codex_turn(
             "--json",
             "--skip-git-repo-check",
             thread_id,
-            trimmed_prompt,
+            prompt,
         ]);
     } else {
-        command.args(["exec", "--json", "--skip-git-repo-check", trimmed_prompt]);
+        command.args(["exec", "--json", "--skip-git-repo-check", prompt]);
     }
-    command.current_dir(&workspace_dir);
+    command.current_dir(workspace_dir);
+    command
+}
 
-    let process_output = command
-        .output()
-        .map_err(|error| format!("failed to launch codex CLI: {error}"))?;
+fn run_codex_process_with_fallback(
+    workspace_dir: &Path,
+    existing_codex_thread_id: Option<&str>,
+    prompt: &str,
+) -> Result<(std::process::Output, String), String> {
+    let candidates = codex_cli_candidates(workspace_dir);
+    let mut not_found_attempts: Vec<String> = Vec::new();
+
+    for candidate in candidates {
+        let mut command =
+            build_codex_turn_command(&candidate, workspace_dir, existing_codex_thread_id, prompt);
+        match command.output() {
+            Ok(output) => {
+                let descriptor = if candidate.prefix_args.is_empty() {
+                    format!("{}", candidate.program.to_string_lossy())
+                } else {
+                    format!(
+                        "{} {}",
+                        candidate.program.to_string_lossy(),
+                        candidate.prefix_args.join(" ")
+                    )
+                };
+                return Ok((output, format!("{} ({})", descriptor, candidate.source)));
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                let descriptor = if candidate.prefix_args.is_empty() {
+                    format!("{}", candidate.program.to_string_lossy())
+                } else {
+                    format!(
+                        "{} {}",
+                        candidate.program.to_string_lossy(),
+                        candidate.prefix_args.join(" ")
+                    )
+                };
+                not_found_attempts.push(format!(
+                    "{} [{}] -> {}",
+                    descriptor, candidate.source, error
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "failed to launch codex CLI via {} ({}): {}",
+                    candidate.program.to_string_lossy(),
+                    candidate.source,
+                    error
+                ));
+            }
+        }
+    }
+
+    let mut hints = Vec::new();
+    hints.push("set CODEX_BIN to your codex executable path".to_string());
+    #[cfg(target_os = "windows")]
+    hints.push("common path: C:\\Users\\<you>\\AppData\\Roaming\\npm\\codex.cmd".to_string());
+    #[cfg(not(target_os = "windows"))]
+    hints.push("common path: ~/.local/bin/codex".to_string());
+
+    Err(format!(
+        "failed to launch codex CLI: program not found. Tried: {}. Fix: {}",
+        not_found_attempts.join(" || "),
+        hints.join("; ")
+    ))
+}
+
+fn run_codex_turn(
+    workspace: &str,
+    existing_codex_thread_id: Option<&str>,
+    prompt: &str,
+) -> Result<CodexTurnOutput, String> {
+    let trimmed_prompt = prompt.trim();
+    if trimmed_prompt.is_empty() {
+        return Err("message cannot be empty".to_string());
+    }
+
+    let workspace_dir = resolve_workspace_dir(workspace);
+    let (process_output, launch_descriptor) =
+        run_codex_process_with_fallback(&workspace_dir, existing_codex_thread_id, trimmed_prompt)?;
 
     let stdout = String::from_utf8_lossy(&process_output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&process_output.stderr)
@@ -835,7 +1098,9 @@ fn run_codex_turn(
             .map(|code| code.to_string())
             .unwrap_or_else(|| "unknown".to_string());
 
-        let mut fragments = vec![format!("codex exited with code {exit_code}")];
+        let mut fragments = vec![format!(
+            "codex exited with code {exit_code} (launcher: {launch_descriptor})"
+        )];
         if !parsed.stream_errors.is_empty() {
             fragments.push(format!("stream: {}", parsed.stream_errors.join(" | ")));
         }
@@ -1108,6 +1373,44 @@ not-json-line
             ]
         );
         assert_eq!(parsed.raw_events.len(), 3);
+    }
+
+    #[test]
+    fn make_candidate_from_script_uses_node_launcher() {
+        let candidate = make_candidate_from_program_path(
+            PathBuf::from("C:/temp/codex.js"),
+            "test".to_string(),
+        );
+        assert_eq!(candidate.program, PathBuf::from("node"));
+        assert_eq!(candidate.prefix_args, vec!["C:/temp/codex.js".to_string()]);
+    }
+
+    #[test]
+    fn codex_candidates_include_workspace_checkout_script() {
+        let root = std::env::temp_dir().join(format!("codex-candidate-{}", Uuid::new_v4()));
+        let script_path = root
+            .join("tem")
+            .join("codex")
+            .join("codex-cli")
+            .join("bin")
+            .join("codex.js");
+        if let Some(parent) = script_path.parent() {
+            fs::create_dir_all(parent).expect("create script dir");
+        }
+        fs::write(&script_path, "console.log('codex');").expect("write script file");
+
+        let candidates = codex_cli_candidates(&root);
+        let script_candidate = candidates.iter().find(|candidate| {
+            candidate.program == PathBuf::from("node")
+                && candidate
+                    .prefix_args
+                    .first()
+                    .map(|arg| arg == &script_path.to_string_lossy().to_string())
+                    .unwrap_or(false)
+        });
+        assert!(script_candidate.is_some(), "workspace script candidate missing");
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
