@@ -56,6 +56,7 @@ function normalizeThread(raw) {
     unread: raw.unread,
     pinned: raw.pinned,
     archived: raw.archived,
+    codexThreadId: raw.codexThreadId ?? null,
   };
 }
 

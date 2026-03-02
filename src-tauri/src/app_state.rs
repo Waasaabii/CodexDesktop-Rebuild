@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     fs,
     path::PathBuf,
+    process::Command,
     sync::{
         atomic::{AtomicU64, Ordering},
         Mutex,
@@ -27,6 +28,8 @@ pub struct ThreadSummary {
     pub unread: u32,
     pub pinned: bool,
     pub archived: bool,
+    #[serde(default)]
+    pub codex_thread_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,6 +79,15 @@ struct StoredData {
     threads: Vec<ThreadSummary>,
     messages: HashMap<String, Vec<ChatMessage>>,
     selected_thread_id: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct CodexTurnOutput {
+    thread_id: Option<String>,
+    assistant_text: Option<String>,
+    stream_errors: Vec<String>,
+    raw_events: Vec<Value>,
+    stderr: String,
 }
 
 #[derive(Debug)]
@@ -191,6 +203,7 @@ impl AppState {
             unread: 0,
             pinned: false,
             archived: false,
+            codex_thread_id: None,
         };
 
         let mut data = self.data.lock().expect("data poisoned");
@@ -294,11 +307,11 @@ impl AppState {
         Ok((updated, event))
     }
 
-    fn send_message_local(
+    fn append_user_message_local(
         &self,
         thread_id: &str,
         text: String,
-    ) -> Result<(SendMessageResult, Vec<AppEvent>), String> {
+    ) -> Result<(ChatMessage, String, Option<String>, Vec<AppEvent>), String> {
         let trimmed = text.trim().to_string();
         if trimmed.is_empty() {
             return Err("message cannot be empty".to_string());
@@ -309,15 +322,67 @@ impl AppState {
             id: Uuid::new_v4().to_string(),
             thread_id: thread_id.to_string(),
             role: "user".to_string(),
-            text: trimmed.clone(),
+            text: trimmed,
             ts_ms: now,
         };
+
+        let mut data = self.data.lock().expect("data poisoned");
+        let selected_thread_id = data.selected_thread_id.clone();
+        let index = data
+            .threads
+            .iter()
+            .position(|item| item.id == thread_id)
+            .ok_or_else(|| "thread not found".to_string())?;
+
+        let (thread_snapshot, workspace, codex_thread_id) = {
+            let thread = data
+                .threads
+                .get_mut(index)
+                .expect("thread index out of bounds");
+            thread.updated_at_ms = now_ms();
+            if selected_thread_id.as_deref() != Some(thread.id.as_str()) {
+                thread.unread = thread.unread.saturating_add(1);
+            } else {
+                thread.unread = 0;
+            }
+            let snapshot = thread.clone();
+            let workspace = snapshot.workspace.clone();
+            let codex_thread_id = snapshot.codex_thread_id.clone();
+            (snapshot, workspace, codex_thread_id)
+        };
+
+        data.messages
+            .entry(thread_id.to_string())
+            .or_default()
+            .push(user.clone());
+        self.persist_data(&data)?;
+        drop(data);
+
+        let thread_event = self.append_event("thread-upsert", json!(thread_snapshot));
+        let user_event = self.append_event("message-upsert", json!(user.clone()));
+
+        Ok((user, workspace, codex_thread_id, vec![thread_event, user_event]))
+    }
+
+    fn append_assistant_message_local(
+        &self,
+        thread_id: &str,
+        text: String,
+        codex_thread_id: Option<String>,
+    ) -> Result<(ChatMessage, Vec<AppEvent>), String> {
+        let now = now_ms();
+        let final_text = if text.trim().is_empty() {
+            "（Codex 未返回文本输出）".to_string()
+        } else {
+            text.trim().to_string()
+        };
+
         let assistant = ChatMessage {
             id: Uuid::new_v4().to_string(),
             thread_id: thread_id.to_string(),
             role: "assistant".to_string(),
-            text: ai_reply(&trimmed),
-            ts_ms: now_ms(),
+            text: final_text,
+            ts_ms: now,
         };
 
         let mut data = self.data.lock().expect("data poisoned");
@@ -334,33 +399,25 @@ impl AppState {
                 .get_mut(index)
                 .expect("thread index out of bounds");
             thread.updated_at_ms = now_ms();
-            if selected_thread_id.as_deref() != Some(thread.id.as_str()) {
-                thread.unread = thread.unread.saturating_add(1);
-            } else {
+            if selected_thread_id.as_deref() == Some(thread.id.as_str()) {
                 thread.unread = 0;
+            }
+            if let Some(next_thread_id) = codex_thread_id {
+                thread.codex_thread_id = Some(next_thread_id);
             }
             thread.clone()
         };
 
-        {
-            let bucket = data.messages.entry(thread_id.to_string()).or_default();
-            bucket.push(user.clone());
-            bucket.push(assistant.clone());
-        }
+        data.messages
+            .entry(thread_id.to_string())
+            .or_default()
+            .push(assistant.clone());
         self.persist_data(&data)?;
         drop(data);
 
         let thread_event = self.append_event("thread-upsert", json!(thread_snapshot));
-        let user_event = self.append_event("message-upsert", json!(user.clone()));
         let assistant_event = self.append_event("message-upsert", json!(assistant.clone()));
-
-        Ok((
-            SendMessageResult {
-                user,
-                assistant,
-            },
-            vec![thread_event, user_event, assistant_event],
-        ))
+        Ok((assistant, vec![thread_event, assistant_event]))
     }
 }
 
@@ -383,6 +440,7 @@ fn default_store() -> StoredData {
         unread: 0,
         pinned: false,
         archived: false,
+        codex_thread_id: None,
     };
 
     let welcome = ChatMessage {
@@ -410,18 +468,171 @@ fn load_or_create_store(file_path: &PathBuf) -> StoredData {
     }
 }
 
-fn ai_reply(input: &str) -> String {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return "我收到的是空内容，可以再具体一点吗？".to_string();
+fn collect_stream_error(target: &mut Vec<String>, message: Option<&str>) {
+    if let Some(message) = message.map(str::trim).filter(|value| !value.is_empty()) {
+        target.push(message.to_string());
     }
-    if trimmed.contains("测试") {
-        return "测试已记录。当前链路：前端发送 -> Rust 入队 -> 实时事件 + 增量同步。".to_string();
+}
+
+fn parse_codex_jsonl(stdout: &str) -> CodexTurnOutput {
+    let mut parsed = CodexTurnOutput::default();
+
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let Ok(event) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+
+        let event_type = event
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        match event_type {
+            "thread.started" => {
+                if let Some(thread_id) = event
+                    .get("thread_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|thread_id| !thread_id.is_empty())
+                {
+                    parsed.thread_id = Some(thread_id.to_string());
+                }
+            }
+            "item.started" | "item.updated" | "item.completed" => {
+                if let Some(item) = event.get("item") {
+                    match item.get("type").and_then(Value::as_str) {
+                        Some("agent_message") => {
+                            if let Some(text) = item
+                                .get("text")
+                                .and_then(Value::as_str)
+                                .map(str::trim)
+                                .filter(|text| !text.is_empty())
+                            {
+                                parsed.assistant_text = Some(text.to_string());
+                            }
+                        }
+                        Some("error") => {
+                            collect_stream_error(
+                                &mut parsed.stream_errors,
+                                item.get("message").and_then(Value::as_str),
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            "turn.failed" => {
+                collect_stream_error(
+                    &mut parsed.stream_errors,
+                    event
+                        .get("error")
+                        .and_then(|value| value.get("message"))
+                        .and_then(Value::as_str),
+                );
+            }
+            "error" => {
+                collect_stream_error(
+                    &mut parsed.stream_errors,
+                    event.get("message").and_then(Value::as_str),
+                );
+            }
+            _ => {}
+        }
+
+        parsed.raw_events.push(event);
     }
-    if trimmed.contains("性能") {
-        return "性能建议：优先控制渲染批量、减少消息重排、保持虚拟列表锚点稳定。".to_string();
+
+    parsed
+}
+
+fn resolve_workspace_dir(workspace: &str) -> PathBuf {
+    let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let trimmed_workspace = workspace.trim();
+    if trimmed_workspace.is_empty() {
+        return current_dir;
     }
-    format!("已收到：{}。我会继续按纯 Tauri 架构推进。", trimmed)
+
+    let direct_candidate = PathBuf::from(trimmed_workspace);
+    if direct_candidate.is_dir() {
+        return direct_candidate;
+    }
+
+    let relative_candidate = current_dir.join(trimmed_workspace);
+    if relative_candidate.is_dir() {
+        return relative_candidate;
+    }
+
+    current_dir
+}
+
+fn run_codex_turn(
+    workspace: &str,
+    existing_codex_thread_id: Option<&str>,
+    prompt: &str,
+) -> Result<CodexTurnOutput, String> {
+    let trimmed_prompt = prompt.trim();
+    if trimmed_prompt.is_empty() {
+        return Err("message cannot be empty".to_string());
+    }
+
+    let workspace_dir = resolve_workspace_dir(workspace);
+    let mut command = Command::new("codex");
+
+    if let Some(thread_id) = existing_codex_thread_id
+        .map(str::trim)
+        .filter(|thread_id| !thread_id.is_empty())
+    {
+        command.args([
+            "exec",
+            "resume",
+            "--json",
+            "--skip-git-repo-check",
+            thread_id,
+            trimmed_prompt,
+        ]);
+    } else {
+        command.args(["exec", "--json", "--skip-git-repo-check", trimmed_prompt]);
+    }
+    command.current_dir(&workspace_dir);
+
+    let process_output = command
+        .output()
+        .map_err(|error| format!("failed to launch codex CLI: {error}"))?;
+
+    let stdout = String::from_utf8_lossy(&process_output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&process_output.stderr)
+        .trim()
+        .to_string();
+    let mut parsed = parse_codex_jsonl(&stdout);
+    parsed.stderr = stderr.clone();
+
+    if !process_output.status.success() {
+        let exit_code = process_output
+            .status
+            .code()
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let mut fragments = vec![format!("codex exited with code {exit_code}")];
+        if !parsed.stream_errors.is_empty() {
+            fragments.push(format!("stream: {}", parsed.stream_errors.join(" | ")));
+        }
+        if !stderr.is_empty() {
+            fragments.push(format!("stderr: {stderr}"));
+        }
+        return Err(fragments.join("; "));
+    }
+
+    if parsed.thread_id.is_none() {
+        parsed.thread_id = existing_codex_thread_id.map(ToString::to_string);
+    }
+
+    Ok(parsed)
 }
 
 fn emit_event(app: &AppHandle, event: &AppEvent) -> Result<(), String> {
@@ -512,127 +723,214 @@ pub fn app_send_message(
     thread_id: String,
     text: String,
 ) -> Result<SendMessageResult, String> {
-    let (result, events) = state.send_message_local(&thread_id, text)?;
-    for event in &events {
+    let (user, workspace, existing_codex_thread_id, initial_events) =
+        state.append_user_message_local(&thread_id, text)?;
+    for event in &initial_events {
         emit_event(&app, event)?;
     }
-    Ok(result)
+
+    let started_event = state.append_event(
+        "codex-turn-status",
+        json!({
+            "threadId": thread_id,
+            "status": "started",
+            "codexThreadId": existing_codex_thread_id,
+        }),
+    );
+    emit_event(&app, &started_event)?;
+
+    let turn_result = run_codex_turn(&workspace, existing_codex_thread_id.as_deref(), &user.text);
+
+    let mut next_codex_thread_id = existing_codex_thread_id.clone();
+    let mut turn_status = "completed";
+    let mut turn_error: Option<String> = None;
+
+    let assistant_text = match turn_result {
+        Ok(output) => {
+            let CodexTurnOutput {
+                thread_id: runtime_thread_id,
+                assistant_text: runtime_assistant_text,
+                stream_errors,
+                raw_events,
+                stderr,
+            } = output;
+
+            for raw_event in raw_events {
+                let stream_event = state.append_event(
+                    "codex-turn-event",
+                    json!({
+                        "threadId": thread_id,
+                        "event": raw_event,
+                    }),
+                );
+                emit_event(&app, &stream_event)?;
+            }
+
+            if let Some(thread_id_from_codex) = runtime_thread_id
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+            {
+                next_codex_thread_id = Some(thread_id_from_codex);
+            }
+
+            let mut next_text = runtime_assistant_text
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "（Codex 未返回文本输出）".to_string());
+
+            if next_text == "（Codex 未返回文本输出）" && !stream_errors.is_empty() {
+                next_text = format!("Codex 返回错误：{}", stream_errors.join("；"));
+            }
+
+            if !stream_errors.is_empty() {
+                let warning_event = state.append_event(
+                    "codex-turn-warning",
+                    json!({
+                        "threadId": thread_id,
+                        "messages": stream_errors,
+                    }),
+                );
+                emit_event(&app, &warning_event)?;
+            }
+
+            if !stderr.is_empty() {
+                let stderr_event = state.append_event(
+                    "codex-turn-warning",
+                    json!({
+                        "threadId": thread_id,
+                        "messages": [stderr],
+                    }),
+                );
+                emit_event(&app, &stderr_event)?;
+            }
+
+            next_text
+        }
+        Err(error) => {
+            turn_status = "failed";
+            turn_error = Some(error.clone());
+            format!("Codex 执行失败：{error}")
+        }
+    };
+
+    let (assistant, message_events) = state.append_assistant_message_local(
+        &thread_id,
+        assistant_text,
+        next_codex_thread_id.clone(),
+    )?;
+    for event in &message_events {
+        emit_event(&app, event)?;
+    }
+
+    let completed_event = state.append_event(
+        "codex-turn-status",
+        json!({
+            "threadId": thread_id,
+            "status": turn_status,
+            "codexThreadId": next_codex_thread_id,
+            "error": turn_error,
+        }),
+    );
+    emit_event(&app, &completed_event)?;
+
+    Ok(SendMessageResult { user, assistant })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn test_state() -> AppState {
-        let base = std::env::temp_dir().join(format!("codex-tauri-test-{}", Uuid::new_v4()));
-        AppState::new(base.join("state.json"))
+    #[test]
+    fn parse_codex_jsonl_extracts_thread_and_last_agent_message() {
+        let sample = r#"
+{"type":"thread.started","thread_id":"thread-123"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"first"}}
+{"type":"item.updated","item":{"id":"item_1","type":"agent_message","text":"second"}}
+{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}
+"#;
+
+        let parsed = parse_codex_jsonl(sample);
+        assert_eq!(parsed.thread_id.as_deref(), Some("thread-123"));
+        assert_eq!(parsed.assistant_text.as_deref(), Some("second"));
+        assert_eq!(parsed.stream_errors.len(), 0);
+        assert_eq!(parsed.raw_events.len(), 4);
     }
 
     #[test]
-    fn create_and_select_thread_flow() {
-        let state = test_state();
-        let (created, _) = state
-            .create_thread_local(Some("T1".to_string()), Some("W".to_string()))
-            .expect("create");
+    fn parse_codex_jsonl_collects_stream_errors() {
+        let sample = r#"
+not-json-line
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"item error"}}
+{"type":"turn.failed","error":{"message":"turn failed"}}
+{"type":"error","message":"stream failed"}
+"#;
 
-        let (selected, _) = state
-            .select_thread_local(&created.id)
-            .expect("select");
+        let parsed = parse_codex_jsonl(sample);
+        assert_eq!(
+            parsed.stream_errors,
+            vec![
+                "item error".to_string(),
+                "turn failed".to_string(),
+                "stream failed".to_string()
+            ]
+        );
+        assert_eq!(parsed.raw_events.len(), 3);
+    }
 
-        assert_eq!(selected.id, created.id);
-        assert_eq!(selected.unread, 0);
+    #[test]
+    fn thread_summary_deserializes_without_codex_thread_id() {
+        let value = json!({
+            "id": "thread-1",
+            "title": "Thread 1",
+            "workspace": "workspace",
+            "updatedAtMs": 1,
+            "unread": 0,
+            "pinned": false,
+            "archived": false
+        });
 
+        let parsed: ThreadSummary = serde_json::from_value(value).expect("deserialize thread summary");
+        assert_eq!(parsed.codex_thread_id, None);
+    }
+
+    #[test]
+    fn append_assistant_message_updates_persisted_codex_thread_id() {
+        let mut state_file = std::env::temp_dir();
+        state_file.push(format!("codex-tauri-state-{}.json", Uuid::new_v4()));
+
+        let state = AppState::new(state_file.clone());
         let bootstrap = state.bootstrap_payload();
-        assert!(bootstrap.threads.iter().any(|thread| thread.id == created.id));
-        assert_eq!(bootstrap.selected_thread_id, Some(created.id));
-    }
+        let thread_id = bootstrap
+            .selected_thread_id
+            .expect("selected thread should exist");
 
-    #[test]
-    fn send_message_generates_assistant_reply() {
-        let state = test_state();
-        let thread_id = {
-            let bootstrap = state.bootstrap_payload();
-            bootstrap.selected_thread_id.expect("selected thread")
-        };
+        let _ = state
+            .append_user_message_local(&thread_id, "hello".to_string())
+            .expect("append user message");
+        let _ = state
+            .append_assistant_message_local(
+                &thread_id,
+                "world".to_string(),
+                Some("codex-thread-1".to_string()),
+            )
+            .expect("append assistant message");
 
-        let (result, events) = state
-            .send_message_local(&thread_id, "测试消息".to_string())
-            .expect("send");
-
-        assert_eq!(result.user.role, "user");
-        assert_eq!(result.assistant.role, "assistant");
-        assert_eq!(events.len(), 3);
-        assert!(result.assistant.text.contains("测试"));
-
-        let messages = state.messages_for_thread(&thread_id);
-        assert!(messages.iter().any(|msg| msg.id == result.user.id));
-        assert!(messages.iter().any(|msg| msg.id == result.assistant.id));
-    }
-
-    #[test]
-    fn events_queue_respects_sequence() {
-        let state = test_state();
-        let first = state.append_event("x", json!({"v": 1}));
-        let second = state.append_event("x", json!({"v": 2}));
-        assert_eq!(first.seq, 1);
-        assert_eq!(second.seq, 2);
-        let events = state.events_since(1);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].seq, 2);
-    }
-
-    #[test]
-    fn archive_pin_and_rename_update() {
-        let state = test_state();
-        let thread_id = {
-            let bootstrap = state.bootstrap_payload();
-            bootstrap.selected_thread_id.expect("selected thread")
-        };
-
-        let (renamed, _) = state
-            .rename_thread_local(&thread_id, "重命名线程".to_string())
-            .expect("rename");
-        assert_eq!(renamed.title, "重命名线程");
-
-        let (pinned, _) = state.toggle_pin_thread_local(&thread_id).expect("pin");
-        assert!(pinned.pinned);
-
-        let (archived, _) = state
-            .set_thread_archived_local(&thread_id, true)
-            .expect("archive");
-        assert!(archived.archived);
-
-        let bootstrap = state.bootstrap_payload();
-        let thread = bootstrap
+        let refreshed = state.bootstrap_payload();
+        let thread = refreshed
             .threads
             .into_iter()
-            .find(|item| item.id == thread_id)
-            .expect("thread");
-        assert!(thread.pinned);
-        assert!(thread.archived);
-        assert_eq!(thread.title, "重命名线程");
-    }
+            .find(|thread| thread.id == thread_id)
+            .expect("thread should exist");
+        assert_eq!(thread.codex_thread_id.as_deref(), Some("codex-thread-1"));
 
-    #[test]
-    fn sync_since_returns_new_events_for_feature_operations() {
-        let state = test_state();
-        let seq0 = state.latest_seq();
-        let thread_id = {
-            let bootstrap = state.bootstrap_payload();
-            bootstrap.selected_thread_id.expect("selected thread")
-        };
+        let persisted = load_or_create_store(&state_file);
+        let persisted_thread = persisted
+            .threads
+            .into_iter()
+            .find(|thread| thread.id == thread_id)
+            .expect("persisted thread should exist");
+        assert_eq!(persisted_thread.codex_thread_id.as_deref(), Some("codex-thread-1"));
 
-        let _ = state
-            .rename_thread_local(&thread_id, "A".to_string())
-            .expect("rename");
-        let _ = state.toggle_pin_thread_local(&thread_id).expect("pin");
-        let _ = state
-            .send_message_local(&thread_id, "性能测试".to_string())
-            .expect("send");
-
-        let events = state.events_since(seq0);
-        assert!(events.iter().any(|event| event.kind == "thread-upsert"));
-        assert!(events.iter().any(|event| event.kind == "message-upsert"));
-        assert!(events.len() >= 5);
+        let _ = fs::remove_file(state_file);
     }
 }
