@@ -1,10 +1,18 @@
-# Codex Desktop (Tauri + React + Tailwind + SVG)
+# Codex Desktop (Pure Tauri Refactor)
 
-Refactored desktop stack:
+Current stack:
 
-- Runtime: `Tauri` + Rust backend event bridge
-- Frontend: `React` + `Tailwind CSS` + inline `SVG` icon system
-- Performance: virtualized lists and incremental background-safe sync
+- Runtime: `Tauri` + Rust command/state service (no Electron compatibility layer)
+- Frontend: `React` + `Tailwind CSS` + inline `SVG` icons
+- Performance: thread/message virtualized lists + incremental sync
+
+## Functional Coverage
+
+- Thread management: create, select, rename, pin/unpin, archive/unarchive
+- Message flow: send user message, assistant auto reply, per-thread message history
+- Persistence: `app-state.json` stored under Tauri app data directory
+- Sync: realtime event bus (`codex_app:event`) + `app_sync_since` polling fallback
+- Packaging: Windows `msi` and `nsis` installers via `tauri build`
 
 ## Run
 
@@ -12,6 +20,7 @@ Refactored desktop stack:
 npm install --include=dev
 npm run rust:test
 npm run rust:check
+npm run build:web
 npm run tauri:dev
 ```
 

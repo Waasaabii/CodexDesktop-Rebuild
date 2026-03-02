@@ -68,6 +68,29 @@ export const IconSend = icon(
   </>,
 );
 
+export const IconPin = icon(
+  <>
+    <path d="m9 4 6 6" />
+    <path d="m7 7 10 10" />
+    <path d="m12 14-6 6" />
+  </>,
+);
+
+export const IconArchive = icon(
+  <>
+    <rect x="4.5" y="5.5" width="15" height="4" rx="1" />
+    <path d="M6 9.5v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-8" />
+    <path d="M10 13h4" />
+  </>,
+);
+
+export const IconEdit = icon(
+  <>
+    <path d="M4.5 19.5h5l8-8-5-5-8 8Z" />
+    <path d="m11.5 7.5 5 5" />
+  </>,
+);
+
 export const IconSettings = icon(
   <>
     <circle cx="12" cy="12" r="2.5" />
@@ -90,4 +113,3 @@ export const IconClose = icon(
     <path d="m7 7 10 10M17 7 7 17" />
   </>,
 );
-
