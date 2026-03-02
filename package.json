@@ -1,62 +1,16 @@
 {
-  "name": "codex-rebuild",
-  "productName": "Codex",
-  "version": "1.0.4",
-  "description": "Codex Electron App - Cross-platform Build",
-  "main": "src/.vite/build/main.js",
+  "name": "codex-tauri-refactor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tauri refactor shell for Codex desktop with UI parity and performance-focused backend",
   "scripts": {
-    "start": "node scripts/start-dev.js",
-    "dev": "node scripts/start-dev.js",
-    "patch": "node scripts/patch-copyright.js && node scripts/patch-i18n.js && node scripts/patch-sunset.js && node scripts/patch-devtools.js",
-    "forge:package": "electron-forge package",
-    "forge:make": "npm run patch && electron-forge make",
-    "build": "npm run build:current",
-    "build:current": "npm run forge:make",
-    "build:mac": "npm run patch && npm run build:mac-arm64 && npm run build:mac-x64",
-    "build:mac-arm64": "npm run patch && electron-forge make --platform=darwin --arch=arm64",
-    "build:mac-x64": "npm run patch && electron-forge make --platform=darwin --arch=x64",
-    "build:win": "npm run build:win-x64",
-    "build:win-x64": "npm run patch && electron-forge make --platform=win32 --arch=x64",
-    "build:linux": "npm run patch && npm run build:linux-x64 && npm run build:linux-arm64",
-    "build:linux-x64": "npm run patch && electron-forge make --platform=linux --arch=x64",
-    "build:linux-arm64": "npm run patch && electron-forge make --platform=linux --arch=arm64",
-    "build:all": "npm run build:mac && npm run build:win && npm run build:linux",
-    "postinstall": "npm run rebuild:native",
-    "rebuild:native": "electron-rebuild"
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "devDependencies": {
-    "@electron-forge/cli": "^7.10.2",
-    "@electron-forge/maker-deb": "^7.10.2",
-    "@electron-forge/maker-dmg": "^7.10.2",
-    "@electron-forge/maker-rpm": "^7.10.2",
-    "@electron-forge/maker-squirrel": "^7.10.2",
-    "@electron-forge/maker-zip": "^7.10.2",
-    "@electron-forge/plugin-auto-unpack-natives": "^7.10.2",
-    "@electron-forge/plugin-fuses": "^7.10.2",
-    "@electron/fuses": "^1.8.0",
-    "@electron/rebuild": "^3.7.1",
-    "electron": "40.0.0"
-  },
-  "dependencies": {
-    "@sentry/electron": "^7.5.0",
-    "@sentry/node": "10.29.0",
-    "better-sqlite3": "^12.4.6",
-    "electron-context-menu": "^4.1.1",
-    "electron-squirrel-startup": "^1.0.1",
-    "immer": "^10.1.1",
-    "lodash": "^4.17.21",
-    "memoizee": "^0.4.15",
-    "mime-types": "^2.1.35",
-    "node-pty": "^1.1.0",
-    "shell-env": "^4.0.1",
-    "shlex": "^3.0.0",
-    "smol-toml": "^1.5.2",
-    "zod": "^4.1.13"
-  },
-  "optionalDependencies": {
-    "@cometix/codex": "^0.105.0-cometix",
-    "electron-liquid-glass": "1.1.1"
-  },
-  "codexBuildFlavor": "prod",
-  "codexBuildNumber": "517"
+    "@tauri-apps/cli": "^2.1.0"
+  }
 }
+

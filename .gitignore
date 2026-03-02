@@ -1,38 +1,4 @@
-# Original app bundle (reference only)
-Codex.app/
-
-# Dependencies
 node_modules/
-
-# Build outputs
-out/
+src-tauri/target/
 dist/
 
-# Logs
-*.log
-npm-debug.log*
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Environment
-.env
-.env.local
-.env.*.local
-
-# Temporary files
-*.tmp
-*.temp
-
-# Native binaries (downloaded via npm in CI)
-resources/bin/
-resources/codex
-resources/codex.exe
-.claude/
