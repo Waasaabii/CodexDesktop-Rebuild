@@ -4,6 +4,14 @@
 
 :root {
   color-scheme: dark;
+  --app-window-bg: #0b0f14;
+  --app-main-surface: #10151d;
+  --app-sidebar-surface: #121823;
+  --app-content-surface: #0c1119;
+  --app-border: #253245;
+  --app-border-soft: #1b2635;
+  --app-titlebar-tint: linear-gradient(180deg, rgba(39, 57, 86, 0.28) 0%, rgba(39, 57, 86, 0) 100%);
+  --app-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
 }
 
 html,
@@ -12,7 +20,7 @@ body,
   width: 100%;
   height: 100%;
   margin: 0;
-  background: #0d0f12;
+  background: var(--app-window-bg);
 }
 
 * {
@@ -38,3 +46,59 @@ body,
   background: transparent;
 }
 
+.window-shell {
+  width: 100%;
+  height: 100%;
+  padding: 8px;
+  background: var(--app-window-bg);
+}
+
+.main-surface {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--app-border-soft);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--app-shadow);
+  background: var(--app-main-surface);
+  transition: background-color 180ms ease, border-radius 180ms ease, box-shadow 180ms ease;
+}
+
+.window-fx-sidebar-surface {
+  background: var(--app-sidebar-surface);
+  transition: background-color 180ms ease;
+}
+
+.app-header-tint {
+  background: var(--app-titlebar-tint);
+  transition: background-color 180ms ease;
+}
+
+.app-header-divider {
+  transition: opacity 180ms ease;
+}
+
+.sidebar-resize-handle-line {
+  width: 1px;
+  background: linear-gradient(
+    180deg,
+    rgba(83, 108, 147, 0.42) 0%,
+    rgba(49, 65, 90, 0.28) 52%,
+    rgba(32, 45, 66, 0.18) 100%
+  );
+  transition: background-color 180ms ease;
+}
+
+.content-surface {
+  background: radial-gradient(1200px 500px at 50% -5%, rgba(36, 82, 146, 0.16), transparent 60%),
+    var(--app-content-surface);
+}
+
+.window-control-btn {
+  border-radius: 6px;
+  width: 28px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}

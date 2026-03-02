@@ -454,29 +454,32 @@ export default function App() {
   };
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-codex-bg text-codex-text">
-      <div className="flex h-full w-full border border-codex-border bg-codex-panel">
-            <aside className="flex w-[320px] shrink-0 flex-col border-r border-codex-border bg-codex-panel2">
-              <div className="flex items-center justify-between px-4 py-3">
+    <div className="h-screen w-screen overflow-hidden text-codex-text">
+      <div className="window-shell">
+        <div className="main-surface flex">
+            <aside className="window-fx-sidebar-surface relative flex w-[320px] shrink-0 flex-col border-r border-[rgba(61,82,112,0.45)]">
+              <div className="border-b border-[rgba(67,90,124,0.32)] px-4 py-3">
+                <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 text-zinc-300">
                   <IconLogo className="h-4 w-4 text-zinc-400" />
                   <span className="text-sm font-medium">Codex</span>
                 </div>
                 <button
                   onClick={createThread}
-                  className="rounded-md border border-codex-border px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800/70"
+                  className="rounded-md border border-[rgba(77,101,136,0.55)] px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800/70"
                 >
                   新建
                 </button>
+                </div>
               </div>
 
-              <div className="px-3 pb-2">
+              <div className="px-3 pb-2 pt-2">
                 <button
                   onClick={createThread}
                   className={`mb-2 flex w-full items-center gap-2 rounded-md border px-3 py-2 text-sm ${
                     activeView === "chat"
-                      ? "border-codex-accent/60 bg-zinc-800/70"
-                      : "border-codex-border hover:bg-zinc-800/70"
+                      ? "border-codex-accent/60 bg-[rgba(45,70,103,0.7)]"
+                      : "border-[rgba(76,97,128,0.45)] hover:bg-zinc-800/70"
                   }`}
                 >
                   <IconThread />
@@ -520,7 +523,7 @@ export default function App() {
               </div>
 
               <div className="px-3 pb-1 text-xs text-codex-muted">线程</div>
-              <div ref={threadViewportRef} className="scrollbar-thin flex-1 overflow-auto px-2">
+              <div ref={threadViewportRef} className="scrollbar-thin flex-1 overflow-auto px-2 pb-2">
                 <div className="relative w-full" style={{ height: `${threadVirtualizer.getTotalSize()}px` }}>
                   {threadVirtualizer.getVirtualItems().map((item) => {
                     const thread = filteredThreads[item.index];
@@ -528,10 +531,10 @@ export default function App() {
                     return (
                       <div
                         key={thread.id}
-                        className={`absolute left-0 top-0 w-full rounded-lg border ${
+                        className={`group absolute left-0 top-0 w-full rounded-lg border ${
                           active
-                            ? "border-codex-accent/60 bg-zinc-800/80"
-                            : "border-transparent hover:bg-zinc-800/50"
+                            ? "border-codex-accent/60 bg-[rgba(38,57,84,0.72)]"
+                            : "border-transparent hover:bg-[rgba(34,47,66,0.5)]"
                         } px-2 py-2`}
                         style={{
                           height: `${item.size}px`,
@@ -562,16 +565,16 @@ export default function App() {
                             )}
                           </div>
                         </button>
-                        <div className="mt-1 flex gap-1 text-zinc-400">
-                          <button onClick={() => renameThread(thread.id)} className="rounded p-1 hover:bg-zinc-700">
+                        <div className={`mt-1 flex gap-1 text-zinc-400 transition-opacity ${active ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
+                          <button onClick={() => renameThread(thread.id)} className="rounded p-1 hover:bg-zinc-700/80">
                             <IconEdit className="h-3.5 w-3.5" />
                           </button>
-                          <button onClick={() => togglePin(thread.id)} className="rounded p-1 hover:bg-zinc-700">
+                          <button onClick={() => togglePin(thread.id)} className="rounded p-1 hover:bg-zinc-700/80">
                             <IconPin className="h-3.5 w-3.5" />
                           </button>
                           <button
                             onClick={() => toggleArchive(thread.id, !thread.archived)}
-                            className="rounded p-1 hover:bg-zinc-700"
+                            className="rounded p-1 hover:bg-zinc-700/80"
                           >
                             <IconArchive className="h-3.5 w-3.5" />
                           </button>
@@ -582,18 +585,19 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="border-t border-codex-border p-3">
+              <div className="border-t border-[rgba(67,90,124,0.28)] p-3">
                 <button className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm text-zinc-300 hover:bg-zinc-800/60">
                   <IconSettings />
                   设置
                 </button>
               </div>
+              <div className="sidebar-resize-handle-line absolute right-0 top-0 h-full" />
             </aside>
 
             <main className="flex min-w-0 flex-1 flex-col">
-              <header className="flex h-11 items-center border-b border-codex-border pl-3 pr-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <button className="rounded p-1 text-zinc-400 hover:bg-zinc-800">
+              <header className="app-header-tint app-header-divider relative flex h-11 items-center border-b border-[rgba(66,89,123,0.34)] pl-3 pr-2">
+                <div className="z-10 flex min-w-0 items-center gap-2">
+                  <button className="rounded p-1 text-zinc-400 hover:bg-zinc-800/80">
                     <IconMenu />
                   </button>
                   <h1 className="truncate text-sm font-semibold">
@@ -608,35 +612,36 @@ export default function App() {
                 <div data-tauri-drag-region className="mx-3 h-full flex-1" />
 
                 {canControlWindow ? (
-                  <div className="flex items-center gap-1 text-zinc-400">
+                  <div className="z-10 flex items-center gap-1 text-zinc-400">
                     <button
                       onClick={() => void minimizeWindow()}
-                      className="rounded p-1 hover:bg-zinc-800"
+                      className="window-control-btn hover:bg-zinc-800/80"
                       aria-label="最小化窗口"
                     >
                       <IconMinimize />
                     </button>
                     <button
                       onClick={() => void toggleWindowMaximize()}
-                      className={`rounded p-1 hover:bg-zinc-800 ${isWindowMaximized ? "text-zinc-200" : ""}`}
+                      className={`window-control-btn hover:bg-zinc-800/80 ${isWindowMaximized ? "text-zinc-200" : ""}`}
                       aria-label="切换最大化"
                     >
                       <IconMaximize />
                     </button>
                     <button
                       onClick={() => void closeWindow()}
-                      className="rounded p-1 hover:bg-red-500/20 hover:text-red-200"
+                      className="window-control-btn hover:bg-red-500/20 hover:text-red-200"
                       aria-label="关闭窗口"
                     >
                       <IconClose />
                     </button>
                   </div>
                 ) : null}
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-[rgba(79,105,143,0.25)]" />
               </header>
 
               <section
                 ref={activeView === "chat" ? messageViewportRef : null}
-                className="scrollbar-thin min-h-0 flex-1 overflow-auto bg-[#0f1216] px-6 py-5"
+                className="content-surface scrollbar-thin min-h-0 flex-1 overflow-auto px-6 py-5"
               >
                 {activeView === "chat" ? (
                   booting ? (
@@ -745,9 +750,9 @@ export default function App() {
               </section>
 
               {activeView === "chat" ? (
-                <footer className="border-t border-codex-border bg-[#111419] px-6 py-4">
+                <footer className="border-t border-[rgba(63,85,117,0.36)] bg-[rgba(14,20,30,0.88)] px-6 py-4 backdrop-blur-sm">
                   <div className="mx-auto flex w-full max-w-5xl items-end gap-3">
-                    <button className="rounded-md border border-codex-border px-3 py-2 text-zinc-300 hover:bg-zinc-800">
+                    <button className="rounded-md border border-[rgba(77,101,136,0.55)] px-3 py-2 text-zinc-300 hover:bg-zinc-800/80">
                       <IconMagic />
                     </button>
                     <textarea
@@ -761,7 +766,7 @@ export default function App() {
                       }}
                       disabled={sending}
                       placeholder={sending ? "Codex 正在处理..." : "输入消息并发送"}
-                      className="min-h-[64px] flex-1 resize-none rounded-xl border border-codex-border bg-zinc-900/70 px-4 py-3 text-sm outline-none ring-codex-accent/30 placeholder:text-codex-muted focus:ring-2 disabled:opacity-60"
+                      className="min-h-[64px] flex-1 resize-none rounded-xl border border-[rgba(75,98,132,0.45)] bg-[rgba(17,25,37,0.86)] px-4 py-3 text-sm outline-none ring-codex-accent/35 placeholder:text-codex-muted focus:ring-2 disabled:opacity-60"
                     />
                     <button
                       onClick={sendMessage}
@@ -775,6 +780,7 @@ export default function App() {
               ) : null}
             </main>
       </div>
+    </div>
     </div>
   );
 }
