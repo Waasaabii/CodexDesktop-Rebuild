@@ -2,6 +2,7 @@
   "name": "codex-tauri-refactor",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.17.1",
   "description": "Tauri refactor shell for Codex desktop with UI parity and performance-focused backend",
   "scripts": {
     "dev:web": "vite --config frontend/vite.config.js --host 127.0.0.1 --port 1420",

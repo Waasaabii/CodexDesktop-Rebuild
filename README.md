@@ -18,16 +18,16 @@ Current stack:
 ## Run
 
 ```bash
-npm install --include=dev
-npm run rust:test
-npm run rust:check
-npm run build:web
-npm run tauri:dev
+pnpm install
+cargo test --manifest-path src-tauri/Cargo.toml
+cargo check --manifest-path src-tauri/Cargo.toml
+pnpm run build:web
+pnpm run tauri:dev
 ```
 
 ## Build
 
 ```bash
-npm run build:web
-npm run tauri:build
+pnpm run build:web
+pnpm run tauri:build
 ```
