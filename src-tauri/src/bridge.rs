@@ -145,10 +145,11 @@ pub fn bridge_send_message(
     state: State<'_, BridgeState>,
     message: Value,
 ) -> Result<BridgeAck, String> {
-    let event = state.append_event("message-from-view", message.clone());
+    let _inbound = state.append_event("message-from-view", message.clone());
+    let outbound = state.append_event("message-for-view", message.clone());
     app.emit("codex_desktop:message-for-view", message)
         .map_err(|err| err.to_string())?;
-    Ok(BridgeAck { seq: event.seq })
+    Ok(BridgeAck { seq: outbound.seq })
 }
 
 #[tauri::command]
@@ -158,11 +159,13 @@ pub fn bridge_send_worker_message(
     worker_id: String,
     message: Value,
 ) -> Result<BridgeAck, String> {
-    let kind = format!("worker:{worker_id}:from-view");
-    let event = state.append_event(kind, message.clone());
+    let inbound_kind = format!("worker:{worker_id}:from-view");
+    let _inbound = state.append_event(inbound_kind, message.clone());
+    let outbound_kind = format!("worker:{worker_id}:for-view");
+    let outbound = state.append_event(outbound_kind, message.clone());
     let channel = format!("codex_desktop:worker:{worker_id}:for-view");
     app.emit(&channel, message).map_err(|err| err.to_string())?;
-    Ok(BridgeAck { seq: event.seq })
+    Ok(BridgeAck { seq: outbound.seq })
 }
 
 #[tauri::command]
@@ -205,5 +208,16 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "c");
     }
-}
 
+    #[test]
+    fn sync_since_keeps_for_view_events() {
+        let state = BridgeState::default();
+        let _ = state.append_event("message-from-view", Value::String("hello".into()));
+        let to_view = state.append_event("message-for-view", Value::String("world".into()));
+
+        let events = state.events_since(to_view.seq - 1);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "message-for-view");
+        assert_eq!(events[0].payload, Value::String("world".into()));
+    }
+}
