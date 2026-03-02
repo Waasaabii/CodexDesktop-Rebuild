@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.openai.codex.tauri.refactor",
   "build": {
-    "frontendDist": "../ui"
+    "beforeDevCommand": "npm run dev:web",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build:web",
+    "frontendDist": "../frontend/dist"
   },
   "app": {
     "withGlobalTauri": true,

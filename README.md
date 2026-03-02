@@ -1,17 +1,15 @@
-# Codex Tauri Refactor
+# Codex Desktop (Tauri + React + Tailwind + SVG)
 
-This folder is a parallel refactor workspace focused on performance architecture while preserving the existing UI.
+Refactored desktop stack:
 
-## Goals
-
-- Keep UI visuals and layout unchanged (reuse existing built webview assets).
-- Replace Electron runtime bridge with a Tauri-compatible bridge.
-- Move incremental event sync and sequence tracking to Rust backend state.
+- Runtime: `Tauri` + Rust backend event bridge
+- Frontend: `React` + `Tailwind CSS` + inline `SVG` icon system
+- Performance: virtualized lists and incremental background-safe sync
 
 ## Run
 
 ```bash
-npm install
+npm install --include=dev
 npm run rust:test
 npm run rust:check
 npm run tauri:dev
@@ -20,6 +18,6 @@ npm run tauri:dev
 ## Build
 
 ```bash
+npm run build:web
 npm run tauri:build
 ```
-
