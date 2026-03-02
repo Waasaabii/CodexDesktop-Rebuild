@@ -105,11 +105,73 @@ export default function App() {
   const [composer, setComposer] = useState("");
   const [sending, setSending] = useState(false);
   const [booting, setBooting] = useState(true);
+  const [isWindowMaximized, setIsWindowMaximized] = useState(false);
 
   const threadViewportRef = useRef(null);
   const messageViewportRef = useRef(null);
 
   const tauri = window.__TAURI__;
+  const appWindow = useMemo(() => tauri?.window?.getCurrentWindow?.(), [tauri]);
+  const canControlWindow = Boolean(appWindow);
+
+  useEffect(() => {
+    let disposed = false;
+    const syncWindowState = async () => {
+      if (!appWindow?.isMaximized) return;
+      try {
+        const maximized = await appWindow.isMaximized();
+        if (!disposed) {
+          setIsWindowMaximized(Boolean(maximized));
+        }
+      } catch (error) {
+        console.warn("sync maximize state failed:", error);
+      }
+    };
+    void syncWindowState();
+    return () => {
+      disposed = true;
+    };
+  }, [appWindow]);
+
+  const minimizeWindow = async () => {
+    if (!appWindow?.minimize) return;
+    try {
+      await appWindow.minimize();
+    } catch (error) {
+      console.error("window minimize failed:", error);
+    }
+  };
+
+  const toggleWindowMaximize = async () => {
+    if (!appWindow) return;
+    try {
+      if (appWindow.toggleMaximize) {
+        await appWindow.toggleMaximize();
+      } else if (appWindow.isMaximized) {
+        const maximized = await appWindow.isMaximized();
+        if (maximized && appWindow.unmaximize) {
+          await appWindow.unmaximize();
+        } else if (!maximized && appWindow.maximize) {
+          await appWindow.maximize();
+        }
+      }
+      if (appWindow.isMaximized) {
+        const next = await appWindow.isMaximized();
+        setIsWindowMaximized(Boolean(next));
+      }
+    } catch (error) {
+      console.error("window maximize toggle failed:", error);
+    }
+  };
+
+  const closeWindow = async () => {
+    if (!appWindow?.close) return;
+    try {
+      await appWindow.close();
+    } catch (error) {
+      console.error("window close failed:", error);
+    }
+  };
 
   const loadBootstrap = useCallback(async () => {
     if (!tauri?.core?.invoke) return;
@@ -392,10 +454,8 @@ export default function App() {
   };
 
   return (
-    <div className="h-full w-full bg-codex-bg text-codex-text">
-      <div className="h-full w-full p-2">
-        <div className="h-full w-full rounded-xl border border-codex-border bg-codex-panel shadow-panel">
-          <div className="flex h-full">
+    <div className="h-screen w-screen overflow-hidden bg-codex-bg text-codex-text">
+      <div className="flex h-full w-full border border-codex-border bg-codex-panel">
             <aside className="flex w-[320px] shrink-0 flex-col border-r border-codex-border bg-codex-panel2">
               <div className="flex items-center justify-between px-4 py-3">
                 <div className="flex items-center gap-2 text-zinc-300">
@@ -531,8 +591,8 @@ export default function App() {
             </aside>
 
             <main className="flex min-w-0 flex-1 flex-col">
-              <header className="flex h-12 items-center justify-between border-b border-codex-border px-4">
-                <div className="flex min-w-0 items-center gap-3">
+              <header className="flex h-11 items-center border-b border-codex-border pl-3 pr-2">
+                <div className="flex min-w-0 items-center gap-2">
                   <button className="rounded p-1 text-zinc-400 hover:bg-zinc-800">
                     <IconMenu />
                   </button>
@@ -544,17 +604,34 @@ export default function App() {
                         : "自动化"}
                   </h1>
                 </div>
-                <div className="flex items-center gap-1 text-zinc-400">
-                  <button className="rounded p-1 hover:bg-zinc-800">
-                    <IconMinimize />
-                  </button>
-                  <button className="rounded p-1 hover:bg-zinc-800">
-                    <IconMaximize />
-                  </button>
-                  <button className="rounded p-1 hover:bg-zinc-800">
-                    <IconClose />
-                  </button>
-                </div>
+
+                <div data-tauri-drag-region className="mx-3 h-full flex-1" />
+
+                {canControlWindow ? (
+                  <div className="flex items-center gap-1 text-zinc-400">
+                    <button
+                      onClick={() => void minimizeWindow()}
+                      className="rounded p-1 hover:bg-zinc-800"
+                      aria-label="最小化窗口"
+                    >
+                      <IconMinimize />
+                    </button>
+                    <button
+                      onClick={() => void toggleWindowMaximize()}
+                      className={`rounded p-1 hover:bg-zinc-800 ${isWindowMaximized ? "text-zinc-200" : ""}`}
+                      aria-label="切换最大化"
+                    >
+                      <IconMaximize />
+                    </button>
+                    <button
+                      onClick={() => void closeWindow()}
+                      className="rounded p-1 hover:bg-red-500/20 hover:text-red-200"
+                      aria-label="关闭窗口"
+                    >
+                      <IconClose />
+                    </button>
+                  </div>
+                ) : null}
               </header>
 
               <section
@@ -697,8 +774,6 @@ export default function App() {
                 </footer>
               ) : null}
             </main>
-          </div>
-        </div>
       </div>
     </div>
   );
