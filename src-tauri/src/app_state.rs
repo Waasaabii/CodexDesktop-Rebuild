@@ -840,6 +840,12 @@ pub fn app_send_message(
 mod tests {
     use super::*;
 
+    fn create_test_state() -> (AppState, PathBuf) {
+        let mut state_file = std::env::temp_dir();
+        state_file.push(format!("codex-tauri-state-{}.json", Uuid::new_v4()));
+        (AppState::new(state_file.clone()), state_file)
+    }
+
     #[test]
     fn parse_codex_jsonl_extracts_thread_and_last_agent_message() {
         let sample = r#"
@@ -895,10 +901,7 @@ not-json-line
 
     #[test]
     fn append_assistant_message_updates_persisted_codex_thread_id() {
-        let mut state_file = std::env::temp_dir();
-        state_file.push(format!("codex-tauri-state-{}.json", Uuid::new_v4()));
-
-        let state = AppState::new(state_file.clone());
+        let (state, state_file) = create_test_state();
         let bootstrap = state.bootstrap_payload();
         let thread_id = bootstrap
             .selected_thread_id
@@ -930,6 +933,80 @@ not-json-line
             .find(|thread| thread.id == thread_id)
             .expect("persisted thread should exist");
         assert_eq!(persisted_thread.codex_thread_id.as_deref(), Some("codex-thread-1"));
+
+        let _ = fs::remove_file(state_file);
+    }
+
+    #[test]
+    fn thread_crud_flow_updates_state() {
+        let (state, state_file) = create_test_state();
+
+        let (created, _) = state
+            .create_thread_local(Some("A".to_string()), Some("workspace".to_string()))
+            .expect("create thread");
+        assert_eq!(created.title, "A");
+        assert_eq!(created.workspace, "workspace");
+        assert_eq!(created.codex_thread_id, None);
+
+        let (selected, _) = state
+            .select_thread_local(&created.id)
+            .expect("select thread");
+        assert_eq!(selected.id, created.id);
+        assert_eq!(selected.unread, 0);
+
+        let (renamed, _) = state
+            .rename_thread_local(&created.id, "B".to_string())
+            .expect("rename thread");
+        assert_eq!(renamed.title, "B");
+
+        let (pinned, _) = state
+            .toggle_pin_thread_local(&created.id)
+            .expect("pin thread");
+        assert!(pinned.pinned);
+
+        let (archived, _) = state
+            .set_thread_archived_local(&created.id, true)
+            .expect("archive thread");
+        assert!(archived.archived);
+
+        let bootstrap = state.bootstrap_payload();
+        let thread = bootstrap
+            .threads
+            .into_iter()
+            .find(|thread| thread.id == created.id)
+            .expect("thread exists");
+        assert_eq!(thread.title, "B");
+        assert!(thread.pinned);
+        assert!(thread.archived);
+
+        let _ = fs::remove_file(state_file);
+    }
+
+    #[test]
+    fn message_append_records_sync_events() {
+        let (state, state_file) = create_test_state();
+        let thread_id = state
+            .bootstrap_payload()
+            .selected_thread_id
+            .expect("selected thread should exist");
+
+        let _ = state
+            .append_user_message_local(&thread_id, "hello".to_string())
+            .expect("append user message");
+        let _ = state
+            .append_assistant_message_local(&thread_id, "world".to_string(), None)
+            .expect("append assistant message");
+
+        let events = state.events_since(0);
+        assert!(events.iter().any(|event| {
+            event.kind == "message-upsert"
+                && event.payload.get("role").and_then(Value::as_str) == Some("user")
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == "message-upsert"
+                && event.payload.get("role").and_then(Value::as_str) == Some("assistant")
+        }));
+        assert!(events.iter().any(|event| event.kind == "thread-upsert"));
 
         let _ = fs::remove_file(state_file);
     }
