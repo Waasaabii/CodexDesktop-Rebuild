@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -71,6 +71,27 @@ pub struct BootstrapPayload {
 pub struct SendMessageResult {
     pub user: ChatMessage,
     pub assistant: ChatMessage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSummary {
+    pub name: String,
+    pub description: String,
+    pub scope: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationSummary {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub rrule: String,
+    pub prompt: String,
+    pub cwds: Vec<String>,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -468,6 +489,202 @@ fn load_or_create_store(file_path: &PathBuf) -> StoredData {
     }
 }
 
+fn codex_home_dir() -> PathBuf {
+    if let Some(from_env) = std::env::var_os("CODEX_HOME") {
+        return PathBuf::from(from_env);
+    }
+    dirs::home_dir()
+        .map(|home| home.join(".codex"))
+        .unwrap_or_else(|| PathBuf::from(".codex"))
+}
+
+fn skill_scope_for_path(path: &Path, codex_home: &Path) -> String {
+    let system_root = codex_home.join("skills").join(".system");
+    if path.starts_with(system_root) {
+        "system".to_string()
+    } else {
+        "user".to_string()
+    }
+}
+
+fn parse_skill_frontmatter(skill_md: &str) -> (Option<String>, Option<String>) {
+    let mut lines = skill_md.lines();
+    if lines.next() != Some("---") {
+        return (None, None);
+    }
+
+    let mut name: Option<String> = None;
+    let mut description: Option<String> = None;
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            break;
+        }
+        if let Some(value) = trimmed.strip_prefix("name:") {
+            let parsed = value.trim();
+            if !parsed.is_empty() {
+                name = Some(parsed.to_string());
+            }
+        } else if let Some(value) = trimmed.strip_prefix("description:") {
+            let parsed = value.trim();
+            if !parsed.is_empty() {
+                description = Some(parsed.to_string());
+            }
+        }
+    }
+    (name, description)
+}
+
+fn list_skill_files(root: &Path, output: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            list_skill_files(&path, output);
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.eq_ignore_ascii_case("SKILL.md"))
+            .unwrap_or(false)
+        {
+            output.push(path);
+        }
+    }
+}
+
+fn read_skill_summaries() -> Vec<SkillSummary> {
+    let codex_home = codex_home_dir();
+    let skills_root = codex_home.join("skills");
+    if !skills_root.is_dir() {
+        return Vec::new();
+    }
+
+    let mut skill_files = Vec::new();
+    list_skill_files(&skills_root, &mut skill_files);
+
+    let mut skills: Vec<SkillSummary> = skill_files
+        .into_iter()
+        .map(|path| {
+            let content = fs::read_to_string(&path).unwrap_or_default();
+            let (frontmatter_name, frontmatter_description) = parse_skill_frontmatter(&content);
+            let fallback_name = path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str())
+                .unwrap_or("unknown-skill")
+                .to_string();
+
+            let description = frontmatter_description.unwrap_or_else(|| "No description".to_string());
+            let scope = skill_scope_for_path(&path, &codex_home);
+            SkillSummary {
+                name: frontmatter_name.unwrap_or(fallback_name),
+                description,
+                scope,
+                path: path.to_string_lossy().to_string(),
+            }
+        })
+        .collect();
+
+    skills.sort_by(|left, right| {
+        left.scope
+            .cmp(&right.scope)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    skills
+}
+
+fn parse_toml_string_list(value: &toml::Value) -> Vec<String> {
+    if let Some(array) = value.as_array() {
+        return array
+            .iter()
+            .filter_map(|item| item.as_str().map(|raw| raw.trim().to_string()))
+            .filter(|item| !item.is_empty())
+            .collect();
+    }
+
+    if let Some(single) = value.as_str() {
+        return single
+            .split(',')
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect();
+    }
+
+    Vec::new()
+}
+
+fn read_automation_summaries() -> Vec<AutomationSummary> {
+    let automations_root = codex_home_dir().join("automations");
+    if !automations_root.is_dir() {
+        return Vec::new();
+    }
+
+    let Ok(entries) = fs::read_dir(&automations_root) else {
+        return Vec::new();
+    };
+
+    let mut automations: Vec<AutomationSummary> = entries
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| {
+            let id = entry.file_name().to_string_lossy().to_string();
+            let automation_toml = entry.path().join("automation.toml");
+            let content = fs::read_to_string(&automation_toml).ok()?;
+            let parsed: toml::Value = toml::from_str(&content).ok()?;
+
+            let name = parsed
+                .get("name")
+                .and_then(toml::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("Unnamed automation")
+                .to_string();
+
+            let status = parsed
+                .get("status")
+                .and_then(toml::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("ACTIVE")
+                .to_string();
+
+            let rrule = parsed
+                .get("rrule")
+                .and_then(toml::Value::as_str)
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
+
+            let prompt = parsed
+                .get("prompt")
+                .and_then(toml::Value::as_str)
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
+
+            let cwds = parsed
+                .get("cwds")
+                .map(parse_toml_string_list)
+                .unwrap_or_default();
+
+            Some(AutomationSummary {
+                id,
+                name,
+                status,
+                rrule,
+                prompt,
+                cwds,
+                path: automation_toml.to_string_lossy().to_string(),
+            })
+        })
+        .collect();
+
+    automations.sort_by(|left, right| left.name.cmp(&right.name));
+    automations
+}
+
 fn collect_stream_error(target: &mut Vec<String>, message: Option<&str>) {
     if let Some(message) = message.map(str::trim).filter(|value| !value.is_empty()) {
         target.push(message.to_string());
@@ -834,6 +1051,16 @@ pub fn app_send_message(
     emit_event(&app, &completed_event)?;
 
     Ok(SendMessageResult { user, assistant })
+}
+
+#[tauri::command]
+pub fn app_list_skills() -> Vec<SkillSummary> {
+    read_skill_summaries()
+}
+
+#[tauri::command]
+pub fn app_list_automations() -> Vec<AutomationSummary> {
+    read_automation_summaries()
 }
 
 #[cfg(test)]

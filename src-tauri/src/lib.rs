@@ -25,7 +25,9 @@ pub fn run() {
             app_state::app_rename_thread,
             app_state::app_toggle_pin_thread,
             app_state::app_set_thread_archived,
-            app_state::app_send_message
+            app_state::app_send_message,
+            app_state::app_list_skills,
+            app_state::app_list_automations
         ])
         .run(tauri::generate_context!())
         .expect("error while running codex tauri refactor");
